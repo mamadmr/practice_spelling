@@ -1,7 +1,4 @@
-"""
-Quick setup script for first-time users.
-Imports sample words and provides guidance.
-"""
+"""Initial setup: import sample words and start the app."""
 import os
 import sys
 

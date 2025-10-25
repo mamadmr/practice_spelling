@@ -1,6 +1,4 @@
-"""
-Main spelling practice application with TTS, batch learning, and progress tracking.
-"""
+"""Command-line spelling practice app with audio and progress tracking."""
 import csv
 import random
 import os

@@ -1,7 +1,4 @@
-"""
-Quick test script to verify audio functionality with caching.
-Now uses pygame for in-program audio playback with cached files!
-"""
+"""Audio playback test for pronunciation."""
 import os
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 

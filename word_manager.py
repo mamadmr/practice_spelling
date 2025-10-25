@@ -1,6 +1,4 @@
-"""
-Word Manager - Utility script to easily add, remove, and manage words in words.csv
-"""
+"""CLI tool to add, remove, search, and list words in words.csv."""
 import csv
 import os
 import sys
