@@ -137,6 +137,8 @@ class WordManager:
 
         normalized = [w.strip().lower() for w in words if w and w.strip()]
         
+        print(f"\nChecking {len(normalized)} word(s) for format and duplicates...")
+        
         # Check words individually and filter problematic ones
         seen = set()
         duplicates = []
@@ -144,7 +146,15 @@ class WordManager:
         unknown_words: List[str] = []
         suggestions_map: dict[str, List[str]] = {}
 
-        for w in normalized:
+        for idx, w in enumerate(normalized):
+            # Show progress for format checking
+            if len(normalized) > 0:
+                percent = ((idx + 1) / len(normalized)) * 100
+                bar_length = 30
+                filled = int(bar_length * (idx + 1) / len(normalized))
+                bar = '█' * filled + '░' * (bar_length - filled)
+                print(f"\r  [{bar}] {percent:.1f}% - checking: {w:<20}", end='', flush=True)
+            
             if w in seen:
                 duplicates.append(w)
             else:
@@ -152,6 +162,10 @@ class WordManager:
 
             if not self._is_format_valid(w):
                 invalid_format.append(w)
+        
+        # Clear progress bar line
+        if len(normalized) > 0:
+            print(f"\r  {'✓ Format check complete':<70}")
 
         # Auto-fix: rewrite CSV with unique, sorted words
         if auto_fix:
@@ -180,10 +194,25 @@ class WordManager:
                     words_to_remove = current_db_words - set(seen)
                     
                     clean_words_to_add = []
-                    for word in words_to_add:
+                    words_to_check = list(words_to_add)
+                    total_to_check = len(words_to_check)
+                    
+                    # Show progress bar for spell checking
+                    if total_to_check > 0:
+                        print(f"\nChecking spelling for {total_to_check} new word(s)...")
+                    
+                    for idx, word in enumerate(words_to_check):
                         # Skip words with invalid format
                         if word in invalid_format:
                             continue
+                        
+                        # Show progress bar
+                        if total_to_check > 0:
+                            percent = ((idx + 1) / total_to_check) * 100
+                            bar_length = 30
+                            filled = int(bar_length * (idx + 1) / total_to_check)
+                            bar = '█' * filled + '░' * (bar_length - filled)
+                            print(f"\r  [{bar}] {percent:.1f}% - checking: {word:<20}", end='', flush=True)
                             
                         # Check spelling only for new words
                         known, score = self._is_dictionary_word(word)
@@ -200,6 +229,10 @@ class WordManager:
                             # Word is known, include it
                             clean_words_to_add.append(word)
                     
+                    # Clear progress bar line if we showed it
+                    if total_to_check > 0:
+                        print(f"\r  {'✓ Spell check complete':<70}")
+                    
                     # Build final word list: existing + validated new words
                     final_words = sorted(current_db_words - words_to_remove) + sorted(clean_words_to_add)
                     
@@ -207,7 +240,30 @@ class WordManager:
                     added_words = sorted(clean_words_to_add)
                     removed_words = sorted(words_to_remove)
                     
-                    added, removed = db.sync_with_word_list(final_words, remove_missing=True)
+                    # Sync with similarity calculation for new words
+                    if added_words:
+                        print(f"\nCalculating similarities for {len(added_words)} new word(s)...")
+                        
+                        def progress_callback(current, total, other_word):
+                            percent = (current / total) * 100 if total > 0 else 0
+                            bar_length = 30
+                            filled = int(bar_length * current / total) if total > 0 else 0
+                            bar = '█' * filled + '░' * (bar_length - filled)
+                            print(f"\r  [{bar}] {percent:.1f}% - {other_word}     ", end='', flush=True)
+                        
+                        added, removed, sims = db.sync_with_word_list(
+                            final_words, 
+                            remove_missing=True,
+                            update_similarities=True,
+                            progress_callback=progress_callback
+                        )
+                        print(f"\n  ✓ Calculated {sims} similarity scores")
+                    else:
+                        added, removed, sims = db.sync_with_word_list(
+                            final_words, 
+                            remove_missing=True,
+                            update_similarities=False
+                        )
             except ImportError as e:
                 print(f"Database sync skipped - missing dependency: {e}")
             except Exception as e:
@@ -275,8 +331,8 @@ class WordManager:
             'removed_words': removed_words,
         }
     
-    def add_word(self, word: str) -> bool:
-        """Add a word to the list."""
+    def add_word(self, word: str, sync_db: bool = True) -> bool:
+        """Add a word to the list and optionally sync with database."""
         word = word.strip().lower()
         if not word:
             print("Error: Word cannot be empty")
@@ -290,17 +346,46 @@ class WordManager:
         words.append(word)
         self.save_words(words)
         print(f"✓ Added '{word}' to the word list")
+        
+        # Sync with database and calculate similarities
+        if sync_db:
+            try:
+                from database import WordDatabase
+                with WordDatabase() as db:
+                    all_words = self.load_words()
+                    print(f"Calculating similarities for '{word}'...")
+                    
+                    def progress_callback(current, total, other_word):
+                        percent = (current / total) * 100 if total > 0 else 0
+                        bar_length = 30
+                        filled = int(bar_length * current / total) if total > 0 else 0
+                        bar = '█' * filled + '░' * (bar_length - filled)
+                        print(f"\r  [{bar}] {percent:.1f}% - {other_word}     ", end='', flush=True)
+                    
+                    added, removed, sims = db.sync_with_word_list(
+                        all_words,
+                        remove_missing=True,
+                        update_similarities=True,
+                        progress_callback=progress_callback
+                    )
+                    if sims > 0:
+                        print(f"\n  ✓ Calculated {sims} similarity scores")
+            except Exception as e:
+                print(f"Warning: Could not update database: {e}")
+        
         return True
     
-    def add_words_bulk(self, word_list: List[str]):
+    def add_words_bulk(self, word_list: List[str], sync_db: bool = True):
         """Add multiple words at once."""
         words = self.load_words()
         added_count = 0
+        new_words = []
         
         for word in word_list:
             word = word.strip().lower()
             if word and word not in words:
                 words.append(word)
+                new_words.append(word)
                 added_count += 1
                 print(f"✓ Added '{word}'")
             elif word in words:
@@ -309,11 +394,37 @@ class WordManager:
         if added_count > 0:
             self.save_words(words)
             print(f"\n✓ Added {added_count} new word(s)")
+            
+            # Sync with database and calculate similarities
+            if sync_db:
+                try:
+                    from database import WordDatabase
+                    with WordDatabase() as db:
+                        all_words = self.load_words()
+                        print(f"Calculating similarities for {len(new_words)} new word(s)...")
+                        
+                        def progress_callback(current, total, other_word):
+                            percent = (current / total) * 100 if total > 0 else 0
+                            bar_length = 30
+                            filled = int(bar_length * current / total) if total > 0 else 0
+                            bar = '█' * filled + '░' * (bar_length - filled)
+                            print(f"\r  [{bar}] {percent:.1f}% - {other_word}     ", end='', flush=True)
+                        
+                        added, removed, sims = db.sync_with_word_list(
+                            all_words,
+                            remove_missing=True,
+                            update_similarities=True,
+                            progress_callback=progress_callback
+                        )
+                        if sims > 0:
+                            print(f"\n  ✓ Calculated {sims} similarity scores")
+                except Exception as e:
+                    print(f"Warning: Could not update database: {e}")
         else:
             print("\nNo new words added")
     
-    def remove_word(self, word: str) -> bool:
-        """Remove a word from the list."""
+    def remove_word(self, word: str, sync_db: bool = True) -> bool:
+        """Remove a word from the list and optionally sync with database."""
         word = word.strip().lower()
         words = self.load_words()
         
@@ -324,6 +435,17 @@ class WordManager:
         words.remove(word)
         self.save_words(words)
         print(f"✓ Removed '{word}' from the word list")
+        
+        # Sync with database to remove word and its similarities
+        if sync_db:
+            try:
+                from database import WordDatabase
+                with WordDatabase() as db:
+                    db.remove_word(word)
+                    print(f"  ✓ Removed from database")
+            except Exception as e:
+                print(f"Warning: Could not update database: {e}")
+        
         return True
     
     def list_words(self):

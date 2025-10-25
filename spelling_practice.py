@@ -64,7 +64,7 @@ class SpellingPractice:
                 self.audio_available = False
     
     def load_words(self) -> List[str]:
-        """Load words from CSV file (supports optional 'word' header)."""
+        """Load words from CSV file, remove duplicates, and save cleaned version."""
         words: List[str] = []
         
         if not os.path.exists(self.words_file):
@@ -95,7 +95,25 @@ class SpellingPractice:
         except Exception as e:
             print(f"{Fore.RED}Unexpected error loading words: {e}")
         
-        return words
+        # Check for duplicates and clean if found
+        original_count = len(words)
+        unique_words = sorted(set(words))  # Remove duplicates and sort
+        duplicates_found = original_count - len(unique_words)
+        
+        if duplicates_found > 0:
+            print(f"{Fore.YELLOW}Found {duplicates_found} duplicate word(s) - cleaning...{Style.RESET_ALL}")
+            # Save cleaned version back to file
+            try:
+                with open(self.words_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['word'])
+                    for word in unique_words:
+                        writer.writerow([word])
+                print(f"{Fore.GREEN}✓ Removed duplicates and saved cleaned list ({len(unique_words)} unique words){Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{Fore.RED}Error saving cleaned words: {e}{Style.RESET_ALL}")
+        
+        return unique_words
     
     def pronounce_word(self, word: str, use_tts: bool = True) -> bool:
         """Pronounce the word using TTS. On Windows, prefer SAPI; otherwise use cached gTTS with pygame.
@@ -218,7 +236,8 @@ class SpellingPractice:
     
     def select_batch(self, all_words: List[str]) -> List[str]:
         """
-        Select a batch of words using weighted random selection.
+        Select a batch of words using weighted random selection with similarity grouping.
+        Words with similar spellings are grouped together in the same batch.
         Words with more mistakes get higher probability.
         """
         if not all_words:
@@ -236,16 +255,63 @@ class SpellingPractice:
         words = [w[0] for w in weighted_words]
         weights = [w[1] for w in weighted_words]
         
-        # Select batch using weighted sampling WITHOUT replacement
-        # Efraimidis-Spirakis algorithm: key = U^(1/weight), take top-k by key
-        pairs = []
-        for w, wt in zip(words, weights):
-            wt = max(float(wt), 1e-9)
-            u = random.random()
-            key = u ** (1.0 / wt)
-            pairs.append((key, w))
-        pairs.sort(reverse=True)
-        batch = [word for _, word in pairs[: self.batch_size]]
+        # First, select a seed word using weighted selection
+        total_weight = sum(weights)
+        if total_weight <= 0:
+            # Fallback to uniform if all weights are zero
+            seed_word = random.choice(words)
+        else:
+            # Weighted random choice
+            rand_val = random.uniform(0, total_weight)
+            cumsum = 0
+            seed_word = words[0]
+            for w, wt in zip(words, weights):
+                cumsum += wt
+                if cumsum >= rand_val:
+                    seed_word = w
+                    break
+        
+        # Get similar words to the seed word
+        similar_words = self.db.get_similar_words(
+            seed_word, 
+            min_similarity=0.3,  # Minimum 30% similarity
+            limit=self.batch_size * 3  # Get more candidates
+        )
+        
+        # Create candidate pool: seed + similar words (that are in all_words)
+        candidate_pool = [seed_word]
+        words_set = set(all_words)
+        
+        for similar_word, similarity in similar_words:
+            if similar_word in words_set and similar_word != seed_word:
+                candidate_pool.append(similar_word)
+            if len(candidate_pool) >= self.batch_size * 2:
+                break
+        
+        # If we don't have enough similar words, add some random words
+        if len(candidate_pool) < self.batch_size:
+            remaining_words = [w for w in words if w not in candidate_pool]
+            random.shuffle(remaining_words)
+            candidate_pool.extend(remaining_words[:self.batch_size * 2 - len(candidate_pool)])
+        
+        # Now select from candidate pool using weights
+        # Get weights for candidates
+        word_to_weight = {w: wt for w, wt in weighted_words}
+        candidate_weights = [word_to_weight.get(w, 1.0) for w in candidate_pool]
+        
+        # Use weighted sampling for final batch selection
+        if len(candidate_pool) <= self.batch_size:
+            batch = candidate_pool
+        else:
+            # Efraimidis-Spirakis algorithm: key = U^(1/weight), take top-k by key
+            pairs = []
+            for w, wt in zip(candidate_pool, candidate_weights):
+                wt = max(float(wt), 1e-9)
+                u = random.random()
+                key = u ** (1.0 / wt)
+                pairs.append((key, w))
+            pairs.sort(reverse=True)
+            batch = [word for _, word in pairs[:self.batch_size]]
         
         # Shuffle the batch so order is random
         random.shuffle(batch)
@@ -354,16 +420,72 @@ class SpellingPractice:
         words = self.load_words()
         # Sync database to match words.csv exactly (add new, remove deleted)
         try:
-            added, removed = self.db.sync_with_word_list(words, remove_missing=True)
-            if added or removed:
-                print(f"{Fore.GREEN}Synced word list with database: +{added} added, -{removed} removed")
+            # First check if we need to initialize similarities
+            self.db.cursor.execute("SELECT COUNT(*) FROM word_similarity")
+            similarity_count = self.db.cursor.fetchone()[0]
+            
+            needs_full_init = similarity_count == 0 and len(words) > 0
+            
+            if needs_full_init:
+                print(f"{Fore.YELLOW}Initializing word similarity matrix for the first time...")
+                print(f"{Fore.YELLOW}This will calculate spelling similarity between all word pairs.")
+                print(f"{Fore.CYAN}Total words: {len(words)}")
+                
+                # Progress bar for initial similarity calculation
+                total_pairs = (len(words) * (len(words) - 1)) // 2
+                print(f"{Fore.CYAN}Total pairs to calculate: {total_pairs}\n")
+                
+                def progress_callback(current, total, word1, word2):
+                    # Simple progress bar
+                    percent = (current / total) * 100 if total > 0 else 0
+                    bar_length = 40
+                    filled = int(bar_length * current / total) if total > 0 else 0
+                    bar = '█' * filled + '░' * (bar_length - filled)
+                    print(f"\r{Fore.GREEN}[{bar}] {percent:.1f}% ({current}/{total}) - {word1} ↔ {word2}     ", end='', flush=True)
+                
+                added, removed, sims_added = self.db.sync_with_word_list(
+                    words, 
+                    remove_missing=True,
+                    update_similarities=False
+                )
+                
+                # Now calculate all similarities with progress
+                self.db.update_all_similarities(words, progress_callback=progress_callback)
+                print(f"\n{Fore.GREEN}✓ Similarity matrix initialized successfully!\n")
+                
+            else:
+                # Regular sync with similarity updates for new words only
+                print(f"{Fore.CYAN}Syncing word list...")
+                
+                def new_word_progress(current, total, other_word):
+                    percent = (current / total) * 100 if total > 0 else 0
+                    bar_length = 30
+                    filled = int(bar_length * current / total) if total > 0 else 0
+                    bar = '█' * filled + '░' * (bar_length - filled)
+                    print(f"\r{Fore.YELLOW}  [{bar}] {percent:.1f}% - comparing with: {other_word}     ", end='', flush=True)
+                
+                added, removed, sims_added = self.db.sync_with_word_list(
+                    words, 
+                    remove_missing=True,
+                    update_similarities=True,
+                    progress_callback=new_word_progress
+                )
+                
+                if added or removed or sims_added:
+                    if added:
+                        print(f"\n{Fore.GREEN}  ✓ Added {added} new word(s)")
+                    if removed:
+                        print(f"{Fore.YELLOW}  ✓ Removed {removed} word(s)")
+                    if sims_added:
+                        print(f"{Fore.CYAN}  ✓ Calculated {sims_added} similarity scores")
+                    print()
+                    
         except Exception as e:
-            print(f"{Fore.YELLOW}Warning: Could not sync database with words.csv: {e}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Warning: Could not sync database: {e}{Style.RESET_ALL}")
         
         if not words:
             print(f"{Fore.RED}No words found in {self.words_file}!")
-            print(f"{Fore.YELLOW}Please add words to the file and try again.")
-            print(f"{Fore.YELLOW}You can use: python word_manager.py add <word>\n")
+            print(f"{Fore.YELLOW}Please add words to {self.words_file} and run again.\n")
             return
         
         print(f"{Fore.GREEN}Loaded {len(words)} words from {self.words_file}\n")

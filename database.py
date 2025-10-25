@@ -3,7 +3,7 @@ Database manager for tracking word progress and statistics.
 """
 import sqlite3
 from datetime import datetime
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import os
 
 
@@ -16,7 +16,8 @@ class WordDatabase:
         self._create_tables()
     
     def _create_tables(self):
-        """Create necessary tables for tracking word progress."""
+        """Create necessary tables for tracking word progress and similarity matrix."""
+        # Table for word statistics
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS word_stats (
                 word TEXT PRIMARY KEY,
@@ -29,6 +30,31 @@ class WordDatabase:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Table for word-to-word similarity scores
+        # Store similarity score between each pair of words
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS word_similarity (
+                word1 TEXT NOT NULL,
+                word2 TEXT NOT NULL,
+                similarity_score REAL NOT NULL,
+                PRIMARY KEY (word1, word2),
+                FOREIGN KEY (word1) REFERENCES word_stats(word),
+                FOREIGN KEY (word2) REFERENCES word_stats(word)
+            )
+        """)
+        
+        # Create index for faster lookups
+        self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_similarity_word1 
+            ON word_similarity(word1)
+        """)
+        
+        self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_similarity_word2 
+            ON word_similarity(word2)
+        """)
+        
         self.conn.commit()
     
     def add_word(self, word: str):
@@ -41,6 +67,217 @@ class WordDatabase:
             self.conn.commit()
         except sqlite3.Error as e:
             print(f"Database error adding word '{word}': {e}")
+    
+    @staticmethod
+    def _levenshtein_distance(s1: str, s2: str) -> int:
+        """Calculate Levenshtein distance between two strings."""
+        if len(s1) < len(s2):
+            return WordDatabase._levenshtein_distance(s2, s1)
+        
+        if len(s2) == 0:
+            return len(s1)
+        
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                # Cost of insertions, deletions, or substitutions
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        
+        return previous_row[-1]
+    
+    @staticmethod
+    def calculate_similarity(word1: str, word2: str) -> float:
+        """
+        Calculate similarity score between two words (0 to 1).
+        Higher score = more similar.
+        Based on normalized Levenshtein distance with additional features.
+        """
+        if word1 == word2:
+            return 1.0
+        
+        word1, word2 = word1.lower(), word2.lower()
+        
+        # Levenshtein distance
+        distance = WordDatabase._levenshtein_distance(word1, word2)
+        max_len = max(len(word1), len(word2))
+        
+        # Normalize to 0-1 range (1 = identical, 0 = completely different)
+        base_similarity = 1.0 - (distance / max_len) if max_len > 0 else 0.0
+        
+        # Bonus for common prefixes (important in spelling)
+        common_prefix = 0
+        for c1, c2 in zip(word1, word2):
+            if c1 == c2:
+                common_prefix += 1
+            else:
+                break
+        prefix_bonus = (common_prefix / max_len) * 0.2 if max_len > 0 else 0.0
+        
+        # Bonus for common suffixes
+        common_suffix = 0
+        for c1, c2 in zip(reversed(word1), reversed(word2)):
+            if c1 == c2:
+                common_suffix += 1
+            else:
+                break
+        suffix_bonus = (common_suffix / max_len) * 0.2 if max_len > 0 else 0.0
+        
+        # Bonus for similar length
+        len_diff = abs(len(word1) - len(word2))
+        length_similarity = 1.0 - (len_diff / max_len) if max_len > 0 else 0.0
+        length_bonus = length_similarity * 0.1
+        
+        # Total similarity (capped at 1.0)
+        total_similarity = min(1.0, base_similarity + prefix_bonus + suffix_bonus + length_bonus)
+        
+        return round(total_similarity, 4)
+    
+    def update_similarity_for_word(self, new_word: str, all_words: List[str], 
+                                   progress_callback=None) -> int:
+        """
+        Calculate and store similarity scores for a new word against all existing words.
+        Returns the number of similarity pairs added.
+        
+        Args:
+            new_word: The new word to calculate similarities for
+            all_words: List of all words in the database
+            progress_callback: Optional callback function(current, total, word) for progress updates
+        """
+        new_word = new_word.lower()
+        pairs_added = 0
+        
+        # Get list of words excluding the new word itself
+        other_words = [w for w in all_words if w.lower() != new_word]
+        total = len(other_words)
+        
+        for idx, other_word in enumerate(other_words):
+            other_word = other_word.lower()
+            
+            # Calculate similarity
+            similarity = self.calculate_similarity(new_word, other_word)
+            
+            # Store both directions for easier queries
+            try:
+                self.cursor.execute("""
+                    INSERT OR REPLACE INTO word_similarity (word1, word2, similarity_score)
+                    VALUES (?, ?, ?)
+                """, (new_word, other_word, similarity))
+                
+                self.cursor.execute("""
+                    INSERT OR REPLACE INTO word_similarity (word1, word2, similarity_score)
+                    VALUES (?, ?, ?)
+                """, (other_word, new_word, similarity))
+                
+                pairs_added += 2
+                
+                # Call progress callback if provided
+                if progress_callback:
+                    progress_callback(idx + 1, total, other_word)
+                    
+            except sqlite3.Error as e:
+                print(f"Error storing similarity for {new_word} <-> {other_word}: {e}")
+        
+        self.conn.commit()
+        return pairs_added
+    
+    def update_all_similarities(self, all_words: List[str], progress_callback=None) -> int:
+        """
+        Calculate and store similarity scores for all word pairs.
+        This is used when building the matrix from scratch.
+        
+        Args:
+            all_words: List of all words to calculate similarities for
+            progress_callback: Optional callback function(current, total, word1, word2) for progress
+        
+        Returns:
+            Number of similarity pairs added
+        """
+        all_words = [w.lower() for w in all_words]
+        n = len(all_words)
+        total_pairs = (n * (n - 1)) // 2  # Number of unique pairs
+        pairs_added = 0
+        current_pair = 0
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                word1, word2 = all_words[i], all_words[j]
+                
+                # Calculate similarity
+                similarity = self.calculate_similarity(word1, word2)
+                
+                # Store both directions
+                try:
+                    self.cursor.execute("""
+                        INSERT OR REPLACE INTO word_similarity (word1, word2, similarity_score)
+                        VALUES (?, ?, ?)
+                    """, (word1, word2, similarity))
+                    
+                    self.cursor.execute("""
+                        INSERT OR REPLACE INTO word_similarity (word1, word2, similarity_score)
+                        VALUES (?, ?, ?)
+                    """, (word2, word1, similarity))
+                    
+                    pairs_added += 2
+                    current_pair += 1
+                    
+                    # Call progress callback if provided
+                    if progress_callback:
+                        progress_callback(current_pair, total_pairs, word1, word2)
+                        
+                except sqlite3.Error as e:
+                    print(f"Error storing similarity for {word1} <-> {word2}: {e}")
+        
+        self.conn.commit()
+        return pairs_added
+    
+    def get_similar_words(self, word: str, min_similarity: float = 0.5, 
+                          limit: int = 10) -> List[Tuple[str, float]]:
+        """
+        Get words similar to the given word.
+        
+        Args:
+            word: The word to find similar words for
+            min_similarity: Minimum similarity threshold (0 to 1)
+            limit: Maximum number of results to return
+        
+        Returns:
+            List of (word, similarity_score) tuples, sorted by similarity (highest first)
+        """
+        self.cursor.execute("""
+            SELECT word2, similarity_score
+            FROM word_similarity
+            WHERE word1 = ? AND similarity_score >= ?
+            ORDER BY similarity_score DESC
+            LIMIT ?
+        """, (word.lower(), min_similarity, limit))
+        
+        return [(row[0], row[1]) for row in self.cursor.fetchall()]
+    
+    def get_similarity(self, word1: str, word2: str) -> Optional[float]:
+        """Get the similarity score between two specific words."""
+        self.cursor.execute("""
+            SELECT similarity_score
+            FROM word_similarity
+            WHERE word1 = ? AND word2 = ?
+        """, (word1.lower(), word2.lower()))
+        
+        row = self.cursor.fetchone()
+        return row[0] if row else None
+    
+    def remove_word_similarities(self, word: str):
+        """Remove all similarity entries for a word."""
+        word = word.lower()
+        self.cursor.execute("""
+            DELETE FROM word_similarity 
+            WHERE word1 = ? OR word2 = ?
+        """, (word, word))
+        self.conn.commit()
+
     
     def update_word_result(self, word: str, correct: bool):
         """Update statistics after user attempts a word."""
@@ -160,20 +397,36 @@ class WordDatabase:
         return weights
     
     def remove_word(self, word: str):
-        """Remove a word from the database."""
-        self.cursor.execute("DELETE FROM word_stats WHERE word = ?", (word.lower(),))
+        """Remove a word from the database and its similarity entries."""
+        word_lower = word.lower()
+        
+        # Remove similarities first
+        self.remove_word_similarities(word_lower)
+        
+        # Remove the word itself
+        self.cursor.execute("DELETE FROM word_stats WHERE word = ?", (word_lower,))
         self.conn.commit()
     
-    def sync_with_word_list(self, word_list: List[str], remove_missing: bool = True) -> Tuple[int, int]:
+    def sync_with_word_list(self, word_list: List[str], remove_missing: bool = True, 
+                           update_similarities: bool = False, progress_callback=None) -> Tuple[int, int, int]:
         """
         Sync the database with the provided word list.
         - Adds any words present in the list but missing in the DB
         - If remove_missing=True, removes any words in the DB not present in the list
-        Returns: (added_count, removed_count)
+        - If update_similarities=True, calculates similarities for new words
+        
+        Args:
+            word_list: List of words to sync
+            remove_missing: Whether to remove words not in the list
+            update_similarities: Whether to calculate similarities for new words
+            progress_callback: Optional callback for similarity calculation progress
+            
+        Returns: (added_count, removed_count, similarities_added)
         """
         normalized = sorted(set(w.strip().lower() for w in word_list if w and w.strip()))
         added_count = 0
         removed_count = 0
+        similarities_added = 0
         
         # Fetch existing words
         self.cursor.execute("SELECT word FROM word_stats")
@@ -187,6 +440,19 @@ class WordDatabase:
         try:
             self.conn.execute('BEGIN')
             
+            # Remove words not in CSV (including their similarities)
+            if to_remove:
+                for word in to_remove:
+                    self.cursor.execute(
+                        "DELETE FROM word_similarity WHERE word1 = ? OR word2 = ?",
+                        (word, word)
+                    )
+                self.cursor.executemany(
+                    "DELETE FROM word_stats WHERE word = ?",
+                    [(w,) for w in to_remove]
+                )
+                removed_count = len(to_remove)
+            
             # Add missing words
             if to_add:
                 now = datetime.now()
@@ -196,20 +462,25 @@ class WordDatabase:
                 )
                 added_count = len(to_add)
             
-            # Remove words not in CSV
-            if to_remove:
-                self.cursor.executemany(
-                    "DELETE FROM word_stats WHERE word = ?",
-                    [(w,) for w in to_remove]
-                )
-                removed_count = len(to_remove)
-            
             self.conn.commit()
+            
+            # Calculate similarities for new words if requested
+            if update_similarities and to_add:
+                all_words_in_db = list(target)  # All words that should now be in DB
+                
+                for new_word in to_add:
+                    sims = self.update_similarity_for_word(
+                        new_word, 
+                        all_words_in_db, 
+                        progress_callback
+                    )
+                    similarities_added += sims
+                    
         except sqlite3.Error as e:
             self.conn.rollback()
             raise sqlite3.Error(f"Failed to sync word list: {e}") from e
         
-        return added_count, removed_count
+        return added_count, removed_count, similarities_added
     
     def close(self):
         """Close database connection."""
