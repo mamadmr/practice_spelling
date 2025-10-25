@@ -1,0 +1,5 @@
+colorama>=0.4.6
+gTTS>=2.5.0
+requests>=2.31.0
+pygame>=2.5.0
+pywin32>=306; platform_system == 'Windows'
