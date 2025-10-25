@@ -319,25 +319,30 @@ class SpellingPractice:
             print(f"{Fore.YELLOW}No statistics yet. Start practicing!\n")
             return
         
-        print(f"\n{Fore.CYAN}{'='*70}")
+        print(f"\n{Fore.CYAN}{'='*80}")
         print(f"{Fore.YELLOW}📊 Your Progress Statistics")
-        print(f"{Fore.CYAN}{'='*70}\n")
+        print(f"{Fore.CYAN}{'='*80}\n")
         
-        print(f"{Fore.WHITE}{'Word':<20} {'Correct':<10} {'Wrong':<10} {'Total':<10} {'Accuracy':<10}")
-        print(f"{Fore.CYAN}{'-'*70}")
+        print(f"{Fore.WHITE}{'Word':<20} {'Correct':<10} {'Wrong':<10} {'Total':<10} {'Streak':<10} {'Accuracy':<10}")
+        print(f"{Fore.CYAN}{'-'*80}")
         
         for stat in stats:
             word = stat['word']
             correct = stat['correct']
             incorrect = stat['incorrect']
             total = stat['total']
+            streak = stat['consecutive_correct']
             accuracy = (correct / total * 100) if total > 0 else 0
             
             color = Fore.GREEN if accuracy >= 80 else Fore.YELLOW if accuracy >= 50 else Fore.RED
             
-            print(f"{color}{word:<20} {correct:<10} {incorrect:<10} {total:<10} {accuracy:.1f}%")
+            # Add visual indicator for streak
+            streak_display = f"{streak}🔥" if streak >= 3 else str(streak)
+            
+            print(f"{color}{word:<20} {correct:<10} {incorrect:<10} {total:<10} {streak_display:<10} {accuracy:.1f}%")
         
-        print(f"{Fore.CYAN}{'='*70}\n")
+        print(f"{Fore.CYAN}{'='*80}\n")
+        print(f"{Fore.CYAN}💡 Tip: Words with low streak counts will appear more often in practice.{Style.RESET_ALL}\n")
     
     def run(self):
         """Main application loop."""

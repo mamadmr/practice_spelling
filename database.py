@@ -25,6 +25,7 @@ class WordDatabase:
                 total_appearances INTEGER DEFAULT 0,
                 last_seen TIMESTAMP,
                 difficulty_score REAL DEFAULT 1.0,
+                consecutive_correct INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -55,7 +56,8 @@ class WordDatabase:
                 SET correct_count = correct_count + 1,
                     total_appearances = total_appearances + 1,
                     last_seen = ?,
-                    difficulty_score = MAX(0.1, difficulty_score - 0.1)
+                    difficulty_score = MAX(0.1, difficulty_score - 0.1),
+                    consecutive_correct = consecutive_correct + 1
                 WHERE word = ?
             """, (datetime.now(), word))
         else:
@@ -64,7 +66,8 @@ class WordDatabase:
                 SET incorrect_count = incorrect_count + 1,
                     total_appearances = total_appearances + 1,
                     last_seen = ?,
-                    difficulty_score = MIN(10.0, difficulty_score + 0.5)
+                    difficulty_score = MIN(10.0, difficulty_score + 0.5),
+                    consecutive_correct = 0
                 WHERE word = ?
             """, (datetime.now(), word))
         
@@ -74,7 +77,7 @@ class WordDatabase:
         """Get statistics for a specific word."""
         self.cursor.execute("""
             SELECT word, correct_count, incorrect_count, total_appearances,
-                   difficulty_score, last_seen
+                   difficulty_score, last_seen, consecutive_correct
             FROM word_stats
             WHERE word = ?
         """, (word.lower(),))
@@ -87,7 +90,8 @@ class WordDatabase:
                 'incorrect': row[2],
                 'total': row[3],
                 'difficulty': row[4],
-                'last_seen': row[5]
+                'last_seen': row[5],
+                'consecutive_correct': row[6]
             }
         return None
     
@@ -95,7 +99,7 @@ class WordDatabase:
         """Get statistics for all words."""
         self.cursor.execute("""
             SELECT word, correct_count, incorrect_count, total_appearances,
-                   difficulty_score, last_seen
+                   difficulty_score, last_seen, consecutive_correct
             FROM word_stats
             ORDER BY difficulty_score DESC, total_appearances ASC
         """)
@@ -106,13 +110,15 @@ class WordDatabase:
             'incorrect': row[2],
             'total': row[3],
             'difficulty': row[4],
-            'last_seen': row[5]
+            'last_seen': row[5],
+            'consecutive_correct': row[6]
         } for row in self.cursor.fetchall()]
     
     def get_weighted_words(self, word_list: List[str]) -> List[Tuple[str, float]]:
         """
         Get words with their weights for selection algorithm.
         Higher difficulty = higher weight = more likely to be selected.
+        Words with lower consecutive_correct count get higher weight.
         Also considers how long ago the word was seen.
         """
         weights = []
@@ -127,6 +133,17 @@ class WordDatabase:
             else:
                 # Base weight from difficulty score
                 weight = stats['difficulty']
+                
+                # Boost weight for words with low consecutive correct count
+                # Words with 0 consecutive correct get highest boost
+                consecutive = stats['consecutive_correct']
+                if consecutive == 0:
+                    weight += 2.0  # High priority for words never correct in a row
+                elif consecutive == 1:
+                    weight += 1.0  # Medium priority
+                elif consecutive == 2:
+                    weight += 0.5  # Low priority
+                # Words with 3+ consecutive correct get no boost (rely on difficulty only)
                 
                 # Boost weight for words not seen recently
                 if stats['last_seen']:
