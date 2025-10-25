@@ -39,7 +39,7 @@ class WordDatabase:
             """, (word.lower(), datetime.now()))
             self.conn.commit()
         except sqlite3.Error as e:
-            print(f"Error adding word: {e}")
+            print(f"Database error adding word '{word}': {e}")
     
     def update_word_result(self, word: str, correct: bool):
         """Update statistics after user attempts a word."""
@@ -147,7 +147,7 @@ class WordDatabase:
         self.cursor.execute("DELETE FROM word_stats WHERE word = ?", (word.lower(),))
         self.conn.commit()
     
-    def sync_with_word_list(self, word_list: List[str], remove_missing: bool = True) -> tuple[int, int]:
+    def sync_with_word_list(self, word_list: List[str], remove_missing: bool = True) -> Tuple[int, int]:
         """
         Sync the database with the provided word list.
         - Adds any words present in the list but missing in the DB
@@ -166,8 +166,8 @@ class WordDatabase:
         to_add = list(target - existing)
         to_remove = list(existing - target) if remove_missing else []
         
+        # Use a transaction to ensure atomicity
         try:
-            # Use a transaction for atomicity
             self.conn.execute('BEGIN')
             
             # Add missing words
@@ -188,9 +188,9 @@ class WordDatabase:
                 removed_count = len(to_remove)
             
             self.conn.commit()
-        except sqlite3.Error:
+        except sqlite3.Error as e:
             self.conn.rollback()
-            raise
+            raise sqlite3.Error(f"Failed to sync word list: {e}") from e
         
         return added_count, removed_count
     

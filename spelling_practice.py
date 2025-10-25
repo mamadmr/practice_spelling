@@ -6,17 +6,12 @@ import sys
 import platform
 from typing import List, Tuple
 from colorama import Fore, Style, init
-import requests
 from gtts import gTTS
 from database import WordDatabase
-import tempfile
 import difflib
-import time
-import threading
 import subprocess
-import contextlib
 
-# Suppress pygame welcome message (if we end up using it)
+# Suppress pygame welcome message
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 import pygame
 
@@ -31,7 +26,6 @@ class SpellingPractice:
         self.words_file = words_file
         self.batch_size = batch_size
         self.db = WordDatabase()
-        self.temp_audio_file = None
         self.use_sapi = False  # Prefer Windows SAPI when available
         
         # Create cache directory for audio files
@@ -68,12 +62,10 @@ class SpellingPractice:
             except Exception as e:
                 print(f"{Fore.YELLOW}Audio system not available: {e}{Style.RESET_ALL}")
                 self.audio_available = False
-        
-        self.play_obj = None  # For tracking playback
     
     def load_words(self) -> List[str]:
-        """Load words from CSV file."""
-        words = []
+        """Load words from CSV file (supports optional 'word' header)."""
+        words: List[str] = []
         
         if not os.path.exists(self.words_file):
             print(f"{Fore.YELLOW}Warning: {self.words_file} not found. Creating it...")
@@ -85,13 +77,23 @@ class SpellingPractice:
         try:
             with open(self.words_file, 'r', encoding='utf-8') as f:
                 reader = csv.reader(f)
-                header = next(reader, None)  # Skip header if exists
+                first = next(reader, None)
+                # Only skip first row if it's the 'word' header
+                if first is not None and (len(first) > 0) and first[0].strip().lower() != 'word':
+                    if first[0].strip():
+                        words.append(first[0].strip().lower())
                 
                 for row in reader:
                     if row and row[0].strip():  # Skip empty rows
                         words.append(row[0].strip().lower())
+        except FileNotFoundError:
+            print(f"{Fore.RED}Error: {self.words_file} not found!")
+        except PermissionError:
+            print(f"{Fore.RED}Error: Permission denied reading {self.words_file}")
+        except csv.Error as e:
+            print(f"{Fore.RED}Error reading CSV file: {e}")
         except Exception as e:
-            print(f"{Fore.RED}Error loading words: {e}")
+            print(f"{Fore.RED}Unexpected error loading words: {e}")
         
         return words
     
@@ -142,8 +144,10 @@ class SpellingPractice:
                     proc.communicate(input=word.encode('utf-8'), timeout=4)
                 except subprocess.TimeoutExpired:
                     # If it takes too long, terminate gracefully
-                    with contextlib.suppress(Exception):
+                    try:
                         proc.kill()
+                    except Exception:
+                        pass
                 return True
             except Exception as e:
                 print(f"{Fore.YELLOW}PowerShell speech failed: {e}{Style.RESET_ALL}")

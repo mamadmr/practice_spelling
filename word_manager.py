@@ -1,8 +1,10 @@
-"""CLI tool to add, remove, search, and list words in words.csv."""
+"""CLI tool to add, remove, search, list, and check words in words.csv."""
 import csv
 import os
 import sys
-from typing import List
+import re
+import sqlite3
+from typing import List, Tuple
 
 
 class WordManager:
@@ -20,11 +22,13 @@ class WordManager:
     
     def load_words(self) -> List[str]:
         """Load all words from the CSV file."""
-        words = []
+        words: List[str] = []
         with open(self.words_file, 'r', encoding='utf-8') as f:
             reader = csv.reader(f)
-            header = next(reader, None)
-            for row in reader:
+            rows = list(reader)
+            # Support optional header; only skip if it's literally 'word'
+            start_index = 1 if (rows and rows[0] and rows[0][0].strip().lower() == 'word') else 0
+            for row in rows[start_index:]:
                 if row and row[0].strip():
                     words.append(row[0].strip().lower())
         return words
@@ -36,6 +40,240 @@ class WordManager:
             writer.writerow(['word'])
             for word in sorted(set(words)):  # Remove duplicates and sort
                 writer.writerow([word])
+
+    # --- Validation helpers ---
+    @staticmethod
+    def _get_spelling_suggestions(word: str, max_suggestions: int = 3) -> List[str]:
+        """Get spelling suggestions for a potentially misspelled word.
+        
+        Returns a list of up to max_suggestions suggestions, ordered by relevance.
+        """
+        try:
+            from spellchecker import SpellChecker  # type: ignore
+            spell = SpellChecker(language='en')
+            best = spell.correction(word)
+            cands = spell.candidates(word) or set()
+            
+            # Also try online suggestions if local ones are limited
+            if len(cands) < 2:
+                try:
+                    import requests
+                    url = f"https://api.datamuse.com/sug?s={word}&max={max_suggestions}"
+                    response = requests.get(url, timeout=2)
+                    if response.status_code == 200:
+                        data = response.json()
+                        online_suggestions = [item.get('word', '') for item in data if 'word' in item]
+                        cands.update(online_suggestions[:max_suggestions])
+                except Exception:
+                    pass
+            
+            # Order candidates by relevance
+            ordered: List[str] = []
+            try:
+                from wordfreq import zipf_frequency  # type: ignore
+                ordered = sorted(
+                    cands,
+                    key=lambda x: (0 if x == best else 1, -zipf_frequency(x, 'en'), len(x))
+                )
+            except Exception:
+                the_rest = sorted([c for c in cands if c != best])
+                ordered = ([best] if best else []) + the_rest
+            
+            # Return top suggestions
+            top = []
+            for s in ordered:
+                if s and s not in top:
+                    top.append(s)
+                if len(top) >= max_suggestions:
+                    break
+            return top
+        except Exception:
+            return []
+
+    @staticmethod
+    def _is_format_valid(word: str) -> bool:
+        """Return True if the word format is valid (letters, hyphen, apostrophe)."""
+        return re.fullmatch(r"[a-zA-Z][a-zA-Z\-']*", word) is not None
+
+    @staticmethod
+    def _is_dictionary_word(word: str) -> Tuple[bool, float]:
+        """Return (is_known, score) using online API first, then wordfreq as fallback.
+        Tries Merriam-Webster API, then wordfreq.zipf_frequency if installed.
+        """
+        # Try online dictionary API first
+        try:
+            import requests
+            # Merriam-Webster Dictionary API (free tier, no key needed for basic lookup)
+            url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+            response = requests.get(url, timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                # If we get valid JSON with entries, word exists
+                if isinstance(data, list) and len(data) > 0:
+                    return (True, 5.0)  # Assign decent score for API-verified words
+            # If 404 or other error, word might not exist - continue to local check
+        except Exception:
+            pass  # Network issues, continue to offline check
+        
+        # Fallback to wordfreq for local checking
+        try:
+            from wordfreq import zipf_frequency  # type: ignore
+            score = zipf_frequency(word, 'en')
+            # zipf_frequency returns 0 for unknown; common words ~3-7. Use > 0 as known.
+            return (score > 0.0), score
+        except Exception:
+            return (True, 0.0)  # If unavailable, don't block validation
+
+    def check_words(self, auto_fix: bool = True, sync_database: bool = True):
+        """Validate the word list, report issues, dedupe, and optionally sync the DB.
+
+        - Checks format (letters/hyphen/apostrophe)
+        - Checks against online dictionary APIs and local wordfreq/pyspellchecker
+        - Finds duplicates (case-insensitive)
+        - Auto-deduplicates and rewrites words.csv when auto_fix=True
+        - Syncs the database to match the CSV when sync_database=True
+        """
+        words = self.load_words()
+
+        normalized = [w.strip().lower() for w in words if w and w.strip()]
+        
+        # Check words individually and filter problematic ones
+        seen = set()
+        duplicates = []
+        invalid_format = []
+        unknown_words: List[str] = []
+        suggestions_map: dict[str, List[str]] = {}
+
+        for w in normalized:
+            if w in seen:
+                duplicates.append(w)
+            else:
+                seen.add(w)
+
+            if not self._is_format_valid(w):
+                invalid_format.append(w)
+
+        # Auto-fix: rewrite CSV with unique, sorted words
+        if auto_fix:
+            unique_sorted = sorted(seen)
+            self.save_words(unique_sorted)
+
+        # Sync database if requested - only check spelling for words being added
+        added = removed = 0
+        added_words = []
+        removed_words = []
+        if sync_database:
+            try:
+                from database import WordDatabase
+                with WordDatabase() as db:
+                    # Get current words in database
+                    current_db_words = set()
+                    try:
+                        stats = db.get_all_stats()
+                        current_db_words = {stat['word'] for stat in stats}
+                    except sqlite3.Error as db_err:
+                        print(f"Database query error: {db_err}")
+                        pass
+                    
+                    # Only spell-check words that would be added to database
+                    words_to_add = set(seen) - current_db_words
+                    words_to_remove = current_db_words - set(seen)
+                    
+                    clean_words_to_add = []
+                    for word in words_to_add:
+                        # Skip words with invalid format
+                        if word in invalid_format:
+                            continue
+                            
+                        # Check spelling only for new words
+                        known, score = self._is_dictionary_word(word)
+                        if not known:
+                            unknown_words.append(word)
+                            # Try to generate suggestions
+                            suggestions = self._get_spelling_suggestions(word, max_suggestions=3)
+                            if suggestions:
+                                suggestions_map[word] = suggestions
+                                # Include words with suggestions in database
+                                clean_words_to_add.append(word)
+                            # Exclude words without suggestions (likely severely misspelled)
+                        else:
+                            # Word is known, include it
+                            clean_words_to_add.append(word)
+                    
+                    # Build final word list: existing + validated new words
+                    final_words = sorted(current_db_words - words_to_remove) + sorted(clean_words_to_add)
+                    
+                    # Track what will be added/removed
+                    added_words = sorted(clean_words_to_add)
+                    removed_words = sorted(words_to_remove)
+                    
+                    added, removed = db.sync_with_word_list(final_words, remove_missing=True)
+            except ImportError as e:
+                print(f"Database sync skipped - missing dependency: {e}")
+            except Exception as e:
+                print(f"Database sync skipped - error: {e}")
+
+        # Summary
+        print("\n=== Word List Check ===")
+        print(f"Total lines: {len(words)}")
+        print(f"Unique words: {len(seen)}")
+
+        dup_list = sorted(set(duplicates))
+        if dup_list:
+            print(f"Duplicates removed: {len(duplicates)}")
+            print("Duplicate words:")
+            for w in dup_list:
+                print(f"  - {w}")
+        else:
+            print("Duplicates removed: 0")
+
+        inv_list = sorted(set(invalid_format))
+        if inv_list:
+            print(f"Format warnings: {len(invalid_format)}")
+            print("Invalid format (letters, - and ' allowed):")
+            for w in inv_list:
+                print(f"  - {w}")
+
+        unk_list = sorted(set(unknown_words))
+        if unk_list:
+            print(f"Dictionary warnings: {len(unknown_words)}")
+            print("Unrecognized words:")
+            for w in unk_list:
+                sugg = suggestions_map.get(w)
+                if sugg:
+                    print(f"  - {w}  -> suggestions: {', '.join(sugg)}")
+                else:
+                    print(f"  - {w}")
+
+        if sync_database:
+            print(f"Database synced: +{added} added, -{removed} removed")
+            if added_words:
+                print("Words added to database:")
+                for w in added_words:
+                    print(f"  + {w}")
+            if removed_words:
+                print("Words removed from database:")
+                for w in removed_words:
+                    print(f"  - {w}")
+            if unknown_words:
+                excluded_count = len([w for w in unknown_words if w not in suggestions_map])
+                if excluded_count > 0:
+                    print(f"Words excluded from database (likely misspelled): {excluded_count}")
+        print("=======================\n")
+        
+        # Return details for potential callers/tests
+        return {
+            'total': len(words),
+            'unique': len(seen),
+            'duplicates': sorted(set(duplicates)),
+            'invalid_format': sorted(set(invalid_format)),
+            'unknown_words': sorted(set(unknown_words)),
+            'suggestions': suggestions_map,
+            'db_added': added,
+            'db_removed': removed,
+            'added_words': added_words,
+            'removed_words': removed_words,
+        }
     
     def add_word(self, word: str) -> bool:
         """Add a word to the list."""
@@ -164,6 +402,7 @@ Commands:
     clear                   Remove all words (with confirmation)
     import <file>           Import words from text file (one per line)
     clear-cache             Clear audio cache (audio will be re-downloaded)
+        check                   Validate and deduplicate words, then sync database
     help                    Show this help message
 
 Examples:
@@ -229,6 +468,9 @@ def main():
         else:
             print("No audio cache to clear")
     
+    elif command == 'check':
+        manager.check_words(auto_fix=True, sync_database=True)
+
     elif command == 'help':
         print_help()
     

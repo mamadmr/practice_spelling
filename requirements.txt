@@ -3,3 +3,5 @@ gTTS>=2.5.0
 requests>=2.31.0
 pygame>=2.5.0
 pywin32>=306; platform_system == 'Windows'
+wordfreq>=3.1.1
+pyspellchecker>=0.8.1
