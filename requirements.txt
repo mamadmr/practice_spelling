@@ -5,3 +5,4 @@ pygame>=2.5.0
 pywin32>=306; platform_system == 'Windows'
 wordfreq>=3.1.1
 pyspellchecker>=0.8.1
+sentence-transformers>=2.2.0

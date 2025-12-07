@@ -1,9 +1,17 @@
 # Spelling Practice
 
-A smart command-line spelling practice app with audio pronunciation, progress tracking, and intelligent word grouping based on spelling similarity.
+A smart command-line spelling practice app with audio pronunciation, progress tracking, and intelligent word grouping based on spelling similarity and semantic meaning.
 
 ## Features
 
+✅ **Cross-Platform** - Works seamlessly on macOS, Windows, and Linux  
+✅ **Native Audio** - Uses platform-specific TTS (macOS `say`, Windows SAPI, or gTTS)  
+✅ **Zero-Wait AI** - Definitions & sentences generate while you type (background prefetch)  
+✅ **AI Definitions** - Shows concise word definitions in color (Ollama Llama3.2)  
+✅ **Smart AI Examples** - Shows 1-5 sentences based on word meanings (Ollama Llama3.2)  
+✅ **Semantic Grouping** - 50% chance to group words by meaning, 50% by spelling (NEW!)  
+✅ **Replay Audio** - Press Enter to hear the word again before spelling  
+✅ **Offline Mode** - Pre-download all audio files for internet-free practice  
 ✅ **Audio Pronunciation** - Hear each word before spelling it  
 ✅ **Progress Tracking** - Tracks correct/incorrect answers and difficulty  
 ✅ **Smart Batching** - Groups similar words together (e.g., "cat", "bat", "hat")  
@@ -19,9 +27,33 @@ A smart command-line spelling practice app with audio pronunciation, progress tr
 
 ### 1. Install Dependencies
 
+**macOS/Linux:**
+```bash
+pip3 install -r requirements.txt
+```
+
+**Windows:**
 ```powershell
 pip install -r requirements.txt
 ```
+
+> **Note:** On macOS, audio uses the native `say` command (no extra setup needed!). On Windows, it will try to use pywin32 or PowerShell TTS. All platforms fall back to gTTS + pygame if needed.
+
+### 1b. Install Ollama (Optional but Recommended)
+
+For AI-powered example sentences:
+
+1. **Install Ollama**: Visit [https://ollama.ai](https://ollama.ai) and download for your platform
+2. **Start Ollama**: 
+   ```bash
+   ollama serve
+   ```
+3. **Pull Llama3.2 model**:
+   ```bash
+   ollama pull llama3.2
+   ```
+
+The app will automatically detect if Ollama is available and enable example sentences!
 
 ### 2. Add Your Words
 
@@ -38,8 +70,17 @@ receive
 
 ### 3. Start Practicing
 
+**macOS/Linux:**
+```bash
+python3 spelling_practice.py
+# Or use the launcher script:
+./start_practice.sh
+```
+
+**Windows:**
 ```powershell
 python spelling_practice.py
+# Or double-click: start_practice.bat
 ```
 
 **That's it!** The system automatically:
@@ -48,8 +89,69 @@ python spelling_practice.py
 - ✅ Calculates spelling similarities
 - ✅ Shows progress bars for all operations
 - ✅ Groups similar words in practice batches
+- ✅ Offers to pre-download audio for offline practice (if not using native TTS)
 
-On Windows, you can also double-click `start_practice.bat`.
+---
+
+## Offline Audio Mode
+
+### How It Works
+
+The app intelligently handles audio based on your platform:
+
+**🍎 macOS** - Uses native `say` command
+- ✅ No internet required (built-in)
+- ✅ No pre-downloading needed
+- ✅ Works offline automatically
+
+**🪟 Windows** - Uses SAPI or PowerShell TTS
+- ✅ No internet required (built-in)
+- ✅ No pre-downloading needed
+- ✅ Works offline automatically
+
+**🐧 Linux or fallback systems** - Uses gTTS with cache
+- 📥 First time: Downloads audio files
+- 💾 Stores in `audio_cache/` folder
+- ✅ Subsequent practice works offline
+
+### Pre-downloading Audio
+
+When you first run the app (on systems using gTTS), you'll be asked:
+
+```
+Do you want to pre-download audio for all words? (y/n):
+```
+
+**Choose Yes** to:
+- Download all audio files at once
+- Practice completely offline afterward
+- Avoid slow downloads during practice
+
+**Choose No** to:
+- Download audio on-demand during practice
+- Save disk space
+- Still works, but needs internet
+
+### Managing Audio Cache
+
+From the main menu, you can:
+
+**Option 5: Download audio cache**
+- Pre-download or update all audio files
+- Force re-download if files are corrupted
+- Only shown for gTTS systems (not macOS/Windows native TTS)
+
+**Option 6: Clear audio cache**
+- Delete all cached audio files
+- Free up disk space
+- Files will be re-downloaded on-demand
+
+### Storage Size
+
+For reference:
+- **382 words** (your current list) ≈ **15-20 MB** of audio files
+- **100 words** ≈ **4-5 MB**
+- **1000 words** ≈ **40-50 MB**
 
 ---
 
@@ -80,9 +182,16 @@ The system calculates **similarity scores** between all words based on:
 ### Weighted Selection
 
 Words are selected based on:
+- **New words** - 5x boost! Unseen words get highest priority to ensure quick learning
 - **Difficulty score** - increases with mistakes
 - **Consecutive correct** - prioritizes words you haven't mastered
+  - 0 correct in a row: +3.0 boost
+  - 1 correct in a row: +1.5 boost
+  - 2 correct in a row: +0.5 boost
+  - 3+ correct: standard difficulty only
 - **Last seen** - words not practiced recently get priority
+
+**New words appear ~5 times more often** than mastered words, helping you learn new vocabulary quickly!
 
 ### Progress Bars
 
@@ -116,16 +225,22 @@ Main Menu:
 2. View statistics
 3. Reload words
 4. Toggle audio (currently: ON)
-5. Exit
+5. Download audio cache
+6. Clear audio cache
+7. Exit
 ==================================================
 ```
+
+**Note:** Options 5-6 are only shown/relevant for systems using cached audio (gTTS). On macOS and Windows with native TTS, these options will inform you that caching isn't needed.
 
 ### During Practice
 
 1. **Listen** - Word is pronounced (or shown if audio is off)
 2. **Type** - Enter your spelling
+   - 💡 **Tip**: Press Enter without typing to replay the audio!
 3. **Feedback** - See if correct, with color-coded differences
-4. **Repeat** - Practice full batch
+4. **Learn** - View AI-generated definition (magenta) and sentences (1-5 based on meanings)
+5. **Repeat** - Practice full batch until mastered
 
 Wrong answers are shown with color-coded differences:
 ```
@@ -133,6 +248,34 @@ Your answer:  recieve
 Correct:      receive
               ^^^   ^^^
 ```
+
+**Replay Feature**: If you press Enter without typing anything, the audio will replay. This lets you hear the word as many times as you need before attempting to spell it!
+
+**Definition & Examples** (with Ollama): After each word, you'll see:
+
+1. **Definition** (in magenta):
+```
+📖 Definition: Run means to move quickly on foot; to be in operation; a sequence of events.
+```
+
+2. **Example Sentences** (1-5 based on meanings):
+
+**Single meaning word:**
+```
+📝 Example sentence (1 meaning):
+   1. The hotel staff will accommodate your request for a room.
+```
+
+**Multiple meaning word:**
+```
+📝 Example sentences (3 meanings):
+   1. The kids love to run around in the park.
+   2. She will run for office next year.
+   3. The marathon runners were training to run 26 miles.
+```
+
+Both definitions and sentences are generated once and cached forever - no repeated API calls!
+The number of sentences automatically matches the word's complexity.
 
 ### Statistics View
 
@@ -156,11 +299,20 @@ See detailed stats for all words:
 ### Optional Files
 - **`word_manager.py`** - Advanced word management (optional)
 - **`test_similarity.py`** - Test similarity features (optional)
-- **`start_practice.bat`** - Windows shortcut (optional)
+- **`test_macos_audio.py`** - Test macOS audio systems (optional)
+- **`test_sentences.py`** - Test Ollama sentence generation (optional)
+- **`start_practice.bat`** - Windows launcher (optional, double-click to run)
+- **`start_practice.sh`** - macOS/Linux launcher (optional, double-click or `./start_practice.sh`)
 
 ### Directories
-- **`audio_cache/`** - Cached audio files (auto-created)
+- **`audio_cache/`** - Cached audio files (auto-created, gTTS systems only)
 - **`__pycache__/`** - Python cache (auto-created)
+
+### Database Tables
+- **`word_stats`** - Progress tracking for each word
+- **`word_similarity`** - Spelling similarity matrix
+- **`word_definitions`** - Cached word definitions from Ollama
+- **`word_sentences`** - Cached example sentences from Ollama
 
 ---
 
@@ -185,6 +337,22 @@ Stores spelling similarity between word pairs:
 - `similarity_score` - Similarity (0.0 to 1.0)
 
 Indexed for fast lookups. Stores both directions (word1→word2 and word2→word1).
+
+#### `word_definitions`
+Caches AI-generated definitions:
+- `word` - The word (primary key)
+- `definition` - Concise definition in one sentence
+- `created_at` - When definition was generated
+
+Definitions are cached to avoid repeated Ollama API calls.
+
+#### `word_sentences`
+Caches AI-generated example sentences:
+- `word` - The word (primary key)
+- `sentences` - 1-5 example sentences based on meanings (newline-separated)
+- `created_at` - When sentences were generated
+
+Sentences are intelligently generated (more meanings = more sentences) and cached forever to avoid repeated Ollama API calls.
 
 ---
 
@@ -338,13 +506,63 @@ LIMIT 10;
 
 ## Troubleshooting
 
+### Testing Ollama sentences
+Run the sentence test script:
+```bash
+python3 test_sentences.py
+```
+
+This will check:
+- If Ollama is running
+- If llama3.2 model is available
+- Generate test sentences
+- Verify caching works
+
+### Ollama not available
+**Problem:** Example sentences not showing  
+**Solution:**
+1. Install Ollama from https://ollama.ai
+2. Start the service: `ollama serve`
+3. Pull the model: `ollama pull llama3.2`
+4. Restart the spelling practice app
+
+The app works fine without Ollama - you just won't see example sentences.
+
+### Testing audio on macOS
+Run the audio test script to verify all systems work:
+```bash
+python3 test_macos_audio.py
+```
+
+This will test:
+- Native macOS `say` command
+- pygame mixer
+- gTTS (Google Text-to-Speech)
+
+### No audio on macOS
+**Problem:** Audio not playing  
+**Solution:** 
+1. The native `say` command should work by default (try `say hello` in Terminal)
+2. If not working, ensure pygame is installed: `pip3 install pygame`
+3. Run the test script to diagnose: `python3 test_macos_audio.py`
+
 ### No audio on Windows
 **Problem:** Audio not playing  
 **Solution:** Install pywin32: `pip install pywin32`
 
+### No audio on Linux
+**Problem:** Audio not playing  
+**Solution:** Install pygame and audio dependencies:
+```bash
+sudo apt-get install python3-pygame libsdl2-mixer-2.0-0
+pip3 install pygame
+```
+
 ### Progress bar not visible
 **Problem:** Progress bar shows weird characters  
-**Solution:** Use PowerShell or Windows Terminal (not CMD or IDLE)
+**Solution:** 
+- **macOS/Linux:** Use a modern terminal (Terminal.app, iTerm2, or similar)
+- **Windows:** Use PowerShell or Windows Terminal (not CMD or IDLE)
 
 ### Database locked error
 **Problem:** "database is locked"  
@@ -365,12 +583,32 @@ LIMIT 10;
 - **colorama** - Colored terminal output
 - **gtts** - Google Text-to-Speech
 - **pygame** - Audio playback
-- **pywin32** (Windows) - Native Windows speech API
+- **pywin32** (Windows only) - Native Windows speech API
 
 Optional:
 - **requests** - Online dictionary checking
 - **pyspellchecker** - Spell checking
 - **wordfreq** - Word frequency data
+
+### Platform-Specific Audio
+
+The app intelligently selects the best audio system for your platform:
+
+- **macOS** 🍎 - Uses native `say` command (built-in, zero configuration!)
+  - Fast, high-quality speech synthesis
+  - No downloads or external dependencies needed
+  - Falls back to gTTS + pygame if needed
+
+- **Windows** 🪟 - Uses pywin32 SAPI or PowerShell System.Speech
+  - Tries Windows SAPI first (requires pywin32)
+  - Falls back to PowerShell TTS (built-in)
+  - Finally falls back to gTTS + pygame
+
+- **Linux** 🐧 - Uses gTTS with pygame mixer
+  - Downloads and caches audio files
+  - Works with any audio-capable Linux system
+
+- **All platforms** - Graceful fallback chain ensures audio always works
 
 ---
 
@@ -379,14 +617,39 @@ Optional:
 1. **Start small** - Begin with 20-30 words
 2. **Practice daily** - Consistency improves retention
 3. **Use audio** - Hearing words helps memory
-4. **Review stats** - Focus on words with low accuracy
-5. **Add similar words** - Learn spelling patterns together
-6. **Be patient** - First run calculates similarities (one-time)
+4. **Pre-download audio** - For uninterrupted offline practice (gTTS systems)
+5. **Review stats** - Focus on words with low accuracy
+6. **Add similar words** - Learn spelling patterns together
+7. **Be patient** - First run calculates similarities (one-time)
+8. **New words prioritized** - The system automatically focuses on unseen words until you master them
 
 ---
 
 ## Example Workflow
 
+**macOS/Linux:**
+```bash
+# Day 1: Setup
+pip3 install -r requirements.txt
+# Edit words.csv with 25 words
+python3 spelling_practice.py
+
+# Day 2-7: Practice
+python3 spelling_practice.py
+# Practice, view stats, repeat
+
+# Week 2: Add more words
+# Edit words.csv, add 10 more words
+python3 spelling_practice.py
+# System auto-adds and calculates similarities
+
+# Month 1: Review
+python3 test_similarity.py
+# See which words are similar
+# View statistics to track improvement
+```
+
+**Windows:**
 ```powershell
 # Day 1: Setup
 pip install -r requirements.txt
